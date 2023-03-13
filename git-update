@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+
+set -euxo pipefail
+
+VERSIONS=(
+  3.11
+  4.7
+  4.8
+  4.9
+  4.10
+  4.11
+  4.12
+  4.13
+  4.14
+)
+
+originating_branch() {
+  local i res
+  i=0
+  res=""
+
+  while [[ -z "$res" && "$i" < 100 ]]; do 
+    res=$(git branch -r --list 'origin/openshift-*' --contains "HEAD~$i" | awk '{print $1; exit}')
+    i=$(($i+1))
+  done
+
+  echo "$res"
+}
+
+reponame="$(basename "$(git rev-parse --show-toplevel)")"
+main_branch="$(
+  if git rev-parse --verify origin/main >/dev/null 2>&1; then
+    echo main
+  elif git rev-parse --verify origin/master >/dev/null 2>&1; then
+    echo master
+  else
+    echo "No main/master branch detected">/dev/stderr
+    exit 1
+  fi
+)"
+
+git submodule update || :
+
+git diff --quiet || {
+  echo branch not clean. exiting >/dev/stderr
+  exit 1
+}
+branch="$(git rev-parse --abbrev-ref HEAD)"
+git fetch origin
+
+case "$reponame" in
+  ocp-build-data)
+    for r in ${VERSIONS[@]}; do
+      git checkout "openshift-$r"
+      git rebase "origin/openshift-$r"
+    done
+    git checkout "$branch"
+    o="$(originating_branch)"
+    [[ -n "$o" ]] && git rebase "$o"
+    ;;
+  redhat-coreos)
+    for r in ${VERSIONS[@]}; do
+      git checkout "$r" || continue
+      git rebase "origin/$r"
+    done
+    git checkout "$branch"
+    o="$(originating_branch)"
+    [[ -n "$o" ]] && git rebase "$o"
+    ;;
+  *)
+    git checkout "$main_branch"
+    git rebase "origin/$main_branch"
+
+    if [[ "$branch" != "$main_branch" ]]; then
+      git checkout "$branch"
+      git rebase "origin/$main_branch"
+    fi
+    ;;
+esac
+git submodule update || :
