@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 
-set -euxo pipefail
+set -euo pipefail
 
+WORKTREE_DIR=~/ocp-ro
+OCP_BUILD_DATA=~/src/github.com/openshift-eng/ocp-build-data
 VERSIONS=(
   3.11
+  4.6
   4.7
   4.8
   4.9
@@ -12,6 +15,8 @@ VERSIONS=(
   4.12
   4.13
   4.14
+  4.15
+  4.16
 )
 
 originating_branch() {
@@ -27,7 +32,13 @@ originating_branch() {
   echo "$res"
 }
 
-reponame="$(basename "$(git rev-parse --show-toplevel)")"
+if [[ "${PWD##$WORKTREE_DIR}" != "$PWD" ]]; then
+  echo "Changing directory to $OCP_BUILD_DATA" >/dev/stderr
+  cd "$OCP_BUILD_DATA"
+fi
+
+repo_path="$(git rev-parse --show-toplevel)"
+reponame="$(basename "$repo_path")"
 main_branch="$(
   if git rev-parse --verify origin/main >/dev/null 2>&1; then
     echo main
@@ -39,24 +50,54 @@ main_branch="$(
   fi
 )"
 
-git submodule update || :
-
 git diff --quiet || {
   echo branch not clean. exiting >/dev/stderr
   exit 1
 }
+
 branch="$(git rev-parse --abbrev-ref HEAD)"
-git fetch origin
+
+echo "Fetching origin" >/dev/stderr
+git fetch --quiet origin
+
+update_branch() {
+  local_branch="$1"
+  remote_branch="$2"
+  git checkout --quiet "$local_branch"
+  local_head="$(git rev-parse --short HEAD)"
+  remote_head="$(git log --pretty=format:%h -n 1 "$remote_branch")"
+  if [[ "$local_head" == "$remote_head" ]]; then
+    echo "No updates for $local_branch" >/dev/stderr
+  else
+    echo "rebasing branch $remote_branch onto $local_branch: $local_head..$remote_head" >/dev/stderr
+    git rebase --quiet "$remote_branch"
+  fi
+}
+
+update_branch "$main_branch" "origin/$main_branch"
 
 case "$reponame" in
   ocp-build-data)
-    for r in ${VERSIONS[@]}; do
-      git checkout "openshift-$r"
-      git rebase "origin/openshift-$r"
+    mkdir -p "$WORKTREE_DIR"
+    shopt -s nullglob
+    chmod --recursive +w "$WORKTREE_DIR"/* 2>/dev/null || true
+    trap "chmod --recursive -w '$WORKTREE_DIR'/*" EXIT
+    for v in ${VERSIONS[@]}; do
+      update_branch "openshift-$v" "origin/openshift-$v"
+      ( 
+        echo "Updating worktree $WORKTREE_DIR/$v" >/dev/stderr
+        if [[ -d "$WORKTREE_DIR/$v" ]]; then
+          cd "$WORKTREE_DIR/$v"
+          git checkout --quiet origin/openshift-$v
+        else
+          git worktree add "$WORKTREE_DIR/$v" origin/openshift-$v
+        fi
+      )
     done
-    git checkout "$branch"
+
+    git checkout --quiet "$branch"
     o="$(originating_branch)"
-    [[ -n "$o" ]] && git rebase "$o"
+    [[ -n "$o" ]] && update_branch "$branch" "$o"
     ;;
   redhat-coreos)
     for r in ${VERSIONS[@]}; do
@@ -68,13 +109,10 @@ case "$reponame" in
     [[ -n "$o" ]] && git rebase "$o"
     ;;
   *)
-    git checkout "$main_branch"
-    git rebase "origin/$main_branch"
-
+    # Basically, do not do this for ocp-build-data
     if [[ "$branch" != "$main_branch" ]]; then
-      git checkout "$branch"
-      git rebase "origin/$main_branch"
+      update_branch "$branch" "origin/$main_branch"
     fi
     ;;
 esac
-git submodule update || :
+
