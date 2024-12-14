@@ -1,0 +1,46 @@
+Name: {{{ git_dir_name }}}
+Version: 0.2
+Release: 0%{?dist}
+Summary: Display data in pretty table in terminal
+
+License: GPLv2
+URL: https://github.com/joepvd/git-update
+VCS: {{{ git_dir_vcs }}}
+Source: {{{ git_dir_pack }}}
+
+BuildRequires: python3-docutils
+Requires: git
+Requires: jq
+Requires: yq
+
+%global debug_package %{nil}
+
+%description
+Do the right thing when updating branches
+
+%prep
+{{{ git_dir_setup_macro }}}
+
+%build
+rst2man README.rst | gzip >git-update.1.gz
+
+%install
+mkdir -p %{buildroot}/usr/bin
+install -m 755 git-update %{buildroot}/usr/bin/git-update
+
+mkdir -p %{buildroot}/usr/share/man/man1
+install -m 644 git-update.1.gz %{buildroot}/usr/share/man/man1/git-update.1.gz
+
+mkdir -p %{buildroot}/usr/share/git-update
+install -m 644 git-update.yaml %{buildroot}/usr/share/git-update/git-update.yaml
+
+%files
+/usr/bin/git-update
+/usr/share/man/man1/git-update.1.gz
+/usr/share/git-update/git-update.yaml
+
+%license
+%doc
+
+%changelog
+{{{ git_dir_changelog }}}

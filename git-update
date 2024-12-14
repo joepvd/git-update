@@ -1,46 +1,47 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+shopt -s extglob
 
-WORKTREE_DIR=~/ocp-ro
-OCP_BUILD_DATA=~/src/github.com/openshift-eng/ocp-build-data
-VERSIONS=(
-  3.11
-  4.6
-  4.7
-  4.8
-  4.9
-  4.10
-  4.11
-  4.12
-  4.13
-  4.14
-  4.15
-  4.16
-  4.17
-)
+main() {
+  repo_path="$(realpath "$(dirname "$(git rev-parse --git-common-dir)")")"
+  reponame="$(basename "$repo_path")"
+  current_branch="$(git rev-parse --abbrev-ref HEAD)"
+  main_branch="$(get_main_branch)"
+
+  cd "$repo_path"
+
+  fetch_origin
+
+  update_branch "$main_branch" "origin/$main_branch"
+
+  config="$(get_config "$reponame")"
+
+  if [[ -n "$config" ]]; then
+    update_worktrees
+  fi
+  # Rebase current branch on most recent originating branch
+  git checkout --quiet "$current_branch"
+  if [[ "$current_branch" != "$main_branch" ]]; then
+    o="$(originating_branch)"
+    [[ -n "$o" ]] && update_branch "$current_branch" "$o"
+  fi
+}
 
 originating_branch() {
   local i res
   i=0
   res=""
 
-  while [[ -z "$res" && "$i" < 100 ]]; do 
-    res=$(git branch -r --list 'origin/openshift-*' --contains "HEAD~$i" | awk '{print $1; exit}')
-    i=$(($i+1))
+  while [[ -z "$res" ]] && ((i < 100 )); do 
+    res=$(git branch -r --list 'origin/*' --contains "HEAD~$i" | awk '{print $1; exit}')
+    i=$((i+1))
   done
 
   echo "$res"
 }
 
-if [[ "${PWD##$WORKTREE_DIR}" != "$PWD" ]]; then
-  echo "Changing directory to $OCP_BUILD_DATA" >/dev/stderr
-  cd "$OCP_BUILD_DATA"
-fi
-
-repo_path="$(git rev-parse --show-toplevel)"
-reponame="$(basename "$repo_path")"
-main_branch="$(
+get_main_branch() {
   if git rev-parse --verify origin/main >/dev/null 2>&1; then
     echo main
   elif git rev-parse --verify origin/master >/dev/null 2>&1; then
@@ -49,19 +50,20 @@ main_branch="$(
     echo "No main/master branch detected">/dev/stderr
     exit 1
   fi
-)"
-
-git diff --quiet || {
-  echo branch not clean. exiting >/dev/stderr
-  exit 1
 }
 
-branch="$(git rev-parse --abbrev-ref HEAD)"
-
-echo "Fetching origin" >/dev/stderr
-git fetch --quiet origin
+fetch_origin() {
+  git diff --quiet || {
+    echo branch not clean. exiting >/dev/stderr
+    exit 1
+  }
+  
+  echo "Fetching origin" >/dev/stderr
+  git fetch --quiet origin
+}
 
 update_branch() {
+  local local_branch remote_branch local_head remote_head
   local_branch="$1"
   remote_branch="$2"
   git checkout --quiet "$local_branch"
@@ -75,45 +77,37 @@ update_branch() {
   fi
 }
 
-update_branch "$main_branch" "origin/$main_branch"
 
-case "$reponame" in
-  ocp-build-data)
-    mkdir -p "$WORKTREE_DIR"
-    shopt -s nullglob
-    chmod --recursive +w "$WORKTREE_DIR"/* 2>/dev/null || true
-    trap "chmod --recursive -w '$WORKTREE_DIR'/*" EXIT
-    for v in ${VERSIONS[@]}; do
-      update_branch "openshift-$v" "origin/openshift-$v"
-      ( 
-        echo "Updating worktree $WORKTREE_DIR/$v" >/dev/stderr
-        if [[ -d "$WORKTREE_DIR/$v" ]]; then
-          cd "$WORKTREE_DIR/$v"
-          git checkout --quiet origin/openshift-$v
-        else
-          git worktree add "$WORKTREE_DIR/$v" origin/openshift-$v
-        fi
-      )
-    done
+get_config() {
+  local reponame="$1"
+  # shellcheck disable=SC2016
+  yq --arg name "$reponame" '
+    .[]
+    | select((.repo | split("/").[-1] ) == $name )
+  ' ~/.config/git-update.yaml || true
+}
 
-    git checkout --quiet "$branch"
-    o="$(originating_branch)"
-    [[ -n "$o" ]] && update_branch "$branch" "$o"
-    ;;
-  redhat-coreos)
-    for r in ${VERSIONS[@]}; do
-      git checkout "$r" || continue
-      git rebase "origin/$r"
-    done
-    git checkout "$branch"
-    o="$(originating_branch)"
-    [[ -n "$o" ]] && git rebase "$o"
-    ;;
-  *)
-    # Basically, do not do this for ocp-build-data
-    if [[ "$branch" != "$main_branch" ]]; then
-      update_branch "$branch" "origin/$main_branch"
-    fi
-    ;;
-esac
+update_worktrees() {
+  worktree_dir="$(jq -r .worktree_dir <<<"$config")"
+  eval worktree_dir="$worktree_dir"  # expand ~
+  mkdir -p "$worktree_dir"
+  shopt -s nullglob
+  chmod --recursive +w "$worktree_dir"/* 2>/dev/null || true
+  trap 'chmod --recursive -w "$worktree_dir"/*' EXIT
+  while read -r branch dir; do
+    update_branch "$branch" "origin/$branch"
+    ( 
+      echo "Updating worktree $worktree_dir/$dir" >/dev/stderr
+      if [[ -d "$worktree_dir/$dir" ]]; then
+        cd "$worktree_dir/$dir"
+        git checkout --quiet "origin/$branch"
+      else
+        git worktree add "$worktree_dir/$dir" "origin/$branch"
+      fi
+    )
+  done < <(
+    jq -r '.checkouts[] | .branch + " " + .dir' <<<"$config"
+  )
+}
 
+main
