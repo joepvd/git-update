@@ -11,7 +11,7 @@ Source: {{{ git_dir_pack }}}
 BuildRequires: python3-docutils
 Requires: git
 Requires: jq
-Requires: yq
+Requires: python-yq
 
 %global debug_package %{nil}
 
