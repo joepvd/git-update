@@ -1,6 +1,6 @@
 Name: {{{ git_dir_name }}}
 Version: 0.2
-Release: 2%{?dist}
+Release: 3%{?dist}
 Summary: Display data in pretty table in terminal
 
 License: GPLv2

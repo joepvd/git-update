@@ -8,6 +8,7 @@ main() {
   reponame="$(basename "$repo_path")"
   current_branch="$(git rev-parse --abbrev-ref HEAD)"
   main_branch="$(get_main_branch)"
+  
 
   cd "$repo_path"
 
@@ -16,6 +17,11 @@ main() {
   update_branch "$main_branch" "origin/$main_branch"
 
   config="$(get_config "$reponame")"
+  upstream_branches="$(
+    jq -r '.checkouts[] | "origin/" + .branch' <<<"$config" |
+      sort --version-sort --reverse |
+      tr '\n' " "
+  )"
 
   if [[ -n "$config" ]]; then
     update_worktrees
@@ -29,12 +35,13 @@ main() {
 }
 
 originating_branch() {
-  local i res
+  local i res upstream_branches
+  upstream_branches="$@"
   i=0
   res=""
 
   while [[ -z "$res" ]] && ((i < 100 )); do 
-    res=$(git branch -r --list 'origin/*' --contains "HEAD~$i" | awk '{print $1; exit}')
+    res=$(git branch -r --list --contains "HEAD~$i" $upstream_branches | awk '{print $1; exit}')
     i=$((i+1))
   done
 
